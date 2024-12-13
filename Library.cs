@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading.Tasks;
 using RuriLib.Attributes;
 using RuriLib.Legacy.Blocks;
@@ -24,6 +26,7 @@ public class Library : BlockRequest
         Dictionary<string, string> Headers,
         Dictionary<string, string> Cookies,
         int Timeout,
+        bool OutputRaw,
         string ContentType = "application/x-www-form-urlencoded",
         string Version = "2.0")
     {
@@ -54,7 +57,7 @@ public class Library : BlockRequest
         HttpRequestMessage? Request = new HttpRequestMessage(new HttpMethod(Method.ToString()), Url);
 
         if (Body != string.Empty)
-            Request.Content = new StringContent(Body, System.Text.Encoding.UTF8, ContentType);
+            Request.Content = new StringContent(Body, Encoding.UTF8, ContentType);
 
         if (Headers != null)
             foreach (KeyValuePair<string, string> Header in Headers)
@@ -71,7 +74,10 @@ public class Library : BlockRequest
             Handler.AllowAutoRedirect = false;
 
         HttpResponseMessage? Response = await Client.SendAsync(Request);
-        string? Content = await Response.Content.ReadAsStringAsync();
+
+        byte[] Buffer = await Response.Content.ReadAsByteArrayAsync();
+
+        string? Content = Encoding.UTF8.GetString(Buffer);
 
         Data.Logger.Log(">> Http2Request\n", LogColors.DarkOrchid);
 
@@ -107,6 +113,10 @@ public class Library : BlockRequest
 
         #region Payload
         Data.Logger.Log("Received Payload:\n", LogColors.AndroidGreen);
+
+        if (OutputRaw)
+            Data.Logger.Log(string.Join(", ", Buffer.Select(b => $"0x{b:X2}")), LogColors.Amber);
+
         Data.Logger.Log($"{Content}", LogColors.CaribbeanGreen);
         #endregion
 
