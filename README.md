@@ -131,7 +131,7 @@ Contributions and modifications are welcome! If you encounter bugs, have feature
 ---
 
 ## **License**  
-This project is licensed under the MIT License.  
+This project is licensed under the "GNU AFFERO GENERAL PUBLIC LICENSE".  
 
 ---
 
