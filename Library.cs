@@ -9,121 +9,165 @@ using RuriLib.Attributes;
 using RuriLib.Legacy.Blocks;
 using RuriLib.Logging;
 using RuriLib.Models.Bots;
-using HttpMethod = System.Net.Http.HttpMethod;
 
 namespace Http2
 {
-    [BlockCategory("Http", "Blocks For Different Http Operations", "#CD3255")]
-    public class Library : BlockRequest
+    [BlockCategory("http", "Blocks for different http operations", "#CD3255")]
+    public class library : BlockRequest
     {
-        [Block("Performs A Custom Http Request With A Specific Version", name = "Http2Request")]
-        public static async Task<string> Http2Request(
-            BotData Data,
-            string Url,
-            RuriLib.Functions.Http.HttpMethod Method,
-            bool AutoRedirect,
-            string Body,
-            Dictionary<string, string> Headers,
-            Dictionary<string, string> Cookies,
-            int Timeout,
-            bool OutputRaw,
-            string ContentType = "application/x-www-form-urlencoded",
-            string Version = "2.0")
+        private static readonly string default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36";
+
+        [Block("Performs a custom HTTP request with a specific version", name = "http2_request")]
+        public static async Task<string> http2_request(
+            BotData data,
+            string url,
+            RuriLib.Functions.Http.HttpMethod method,
+            bool auto_redirect,
+            string body,
+            Dictionary<string, string> headers,
+            Dictionary<string, string> cookies,
+            List<string> proxy_list, // Advanced proxy rotation
+            int timeout,
+            int retry_count,
+            bool output_raw,
+            string user_agent = null,
+            string content_type = "application/x-www-form-urlencoded",
+            string version = "2.0")
         {
-            var httpVersion = Version switch
+            var http_version = version switch
             {
                 "3.0" => new Version(3, 0),
                 "2.0" => new Version(2, 0),
                 _ => new Version(1, 1),
             };
 
+            var active_proxy = get_random_proxy(proxy_list);
+
             using var handler = new HttpClientHandler
             {
-                AllowAutoRedirect = AutoRedirect
+                AllowAutoRedirect = auto_redirect,
+                Proxy = active_proxy != null ? new WebProxy(active_proxy) : null
             };
-
-            // Proxy setup
-            if (Data.Proxy != null)
-            {
-                var proxy = new WebProxy(Data.Proxy.Host, Data.Proxy.Port);
-
-                if (Data.Proxy.NeedsAuthentication)
-                    proxy.Credentials = new NetworkCredential(Data.Proxy.Username, Data.Proxy.Password);
-
-                handler.Proxy = proxy;
-            }
 
             using var client = new HttpClient(handler)
             {
-                DefaultRequestVersion = httpVersion,
+                DefaultRequestVersion = http_version,
                 DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-                Timeout = Timeout > 0 ? TimeSpan.FromSeconds(Timeout) : TimeSpan.FromSeconds(100) // Default timeout
+                Timeout = timeout > 0 ? TimeSpan.FromSeconds(timeout) : TimeSpan.FromSeconds(100)
             };
 
-            // Request message
-            var request = new HttpRequestMessage(new HttpMethod(Method.ToString()), Url);
+            user_agent ??= default_user_agent;
 
-            if (!string.IsNullOrEmpty(Body))
-                request.Content = new StringContent(Body, Encoding.UTF8, ContentType);
+            // Prepare the request
+            var request = new HttpRequestMessage(new HttpMethod(method.ToString()), url);
+            if (!string.IsNullOrEmpty(body))
+                request.Content = new StringContent(body, Encoding.UTF8, content_type);
 
             // Add headers
-            foreach (var header in Headers ?? new Dictionary<string, string>())
+            request.Headers.Add("User-Agent", user_agent);
+            foreach (var header in headers ?? new Dictionary<string, string>())
                 request.Headers.Add(header.Key, header.Value);
 
-            // Consolidated cookie header
-            if (Cookies?.Count > 0)
-                request.Headers.Add("Cookie", string.Join("; ", Cookies.Select(c => $"{c.Key}={c.Value}")));
+            // Consolidate cookies
+            if (cookies?.Count > 0)
+                request.Headers.Add("Cookie", string.Join("; ", cookies.Select(c => $"{c.Key}={c.Value}")));
 
-            // Send request and get response
-            var response = await client.SendAsync(request);
+            HttpResponseMessage response = null;
+            for (int i = 0; i < retry_count; i++)
+            {
+                try
+                {
+                    response = await client.SendAsync(request);
+                    if (response.IsSuccessStatusCode) break;
+                }
+                catch (Exception ex) when (i < retry_count - 1)
+                {
+                    data.logger.Log($"Retrying request due to: {ex.Message}. Attempt {i + 1}/{retry_count}", LogColors.Yellow);
+                }
+            }
+
+            if (response == null)
+                throw new Exception("Failed after all retries");
+
             var buffer = await response.Content.ReadAsByteArrayAsync();
             var content = Encoding.UTF8.GetString(buffer);
 
-            #region Request Logging
-            Data.Logger.Log(">> Http2Request\n", LogColors.DarkOrchid);
-            Data.Logger.Log($"Request Method: {Method} / HTTP/{httpVersion}", LogColors.WhiteSmoke);
-            Data.Logger.Log($"URL: {Url}", LogColors.WhiteSmoke);
+            #region Logging
+            data.logger.Log(">> http2_request\n", LogColors.DarkOrchid);
+            data.logger.Log($"Request Method: {method} / HTTP/{http_version}", LogColors.WhiteSmoke);
+            data.logger.Log($"URL: {url}", LogColors.WhiteSmoke);
 
-            if (Headers?.Count > 0)
+            if (headers?.Count > 0)
             {
-                Data.Logger.Log("Request Headers:", LogColors.WhiteSmoke);
-                foreach (var header in Headers)
-                    Data.Logger.Log($"  {header.Key}: {header.Value}", LogColors.WhiteSmoke);
+                data.logger.Log("Request Headers:", LogColors.WhiteSmoke);
+                foreach (var header in headers)
+                    data.logger.Log($"  {header.Key}: {header.Value}", LogColors.WhiteSmoke);
             }
 
-            if (Cookies?.Count > 0)
+            if (cookies?.Count > 0)
             {
-                Data.Logger.Log("Request Cookies:", LogColors.WhiteSmoke);
-                foreach (var cookie in Cookies)
-                    Data.Logger.Log($"  {cookie.Key}={cookie.Value}", LogColors.WhiteSmoke);
+                data.logger.Log("Request Cookies:", LogColors.WhiteSmoke);
+                foreach (var cookie in cookies)
+                    data.logger.Log($"  {cookie.Key}={cookie.Value}", LogColors.WhiteSmoke);
             }
 
-            if (!string.IsNullOrEmpty(Body))
-                Data.Logger.Log($"Request Body:\n{Body}", LogColors.WhiteSmoke);
-            #endregion
+            if (!string.IsNullOrEmpty(body))
+                data.logger.Log($"Request Body:\n{body}", LogColors.WhiteSmoke);
 
-            #region Response Logging
-            Data.Logger.Log($"Response Code: {response.StatusCode}\n", LogColors.Yellow);
+            data.logger.Log($"Response Code: {response.StatusCode}\n", LogColors.Yellow);
 
             if (response.Headers?.Count() > 0)
             {
-                Data.Logger.Log("Received Headers:", LogColors.BluePurple);
+                data.logger.Log("Received Headers:", LogColors.BluePurple);
                 foreach (var header in response.Headers)
-                    Data.Logger.Log($"  {header.Key}: {string.Join(" ", header.Value)}", LogColors.PurplePizzazz);
+                    data.logger.Log($"  {header.Key}: {string.Join(" ", header.Value)}", LogColors.PurplePizzazz);
             }
             else
             {
-                Data.Logger.Log("No Headers Received", LogColors.Pink);
+                data.logger.Log("No Headers Received", LogColors.Pink);
             }
 
-            Data.Logger.Log("Received Payload:", LogColors.AndroidGreen);
-            if (OutputRaw)
-                Data.Logger.Log(string.Join(", ", buffer.Select(b => $"0x{b:X2}")), LogColors.Amber);
+            data.logger.Log("Received Payload:", LogColors.AndroidGreen);
+            if (output_raw)
+                data.logger.Log(string.Join(", ", buffer.Select(b => $"0x{b:X2}")), LogColors.Amber);
 
-            Data.Logger.Log($"{content}", LogColors.CaribbeanGreen);
+            data.logger.Log($"{content}", LogColors.CaribbeanGreen);
             #endregion
 
             return content;
+        }
+
+        [Block("Performs multiple HTTP requests concurrently", name = "multi_threaded_requests")]
+        public static async Task<List<string>> multi_threaded_requests(
+            BotData data,
+            List<string> urls,
+            RuriLib.Functions.Http.HttpMethod method,
+            bool auto_redirect,
+            string body,
+            Dictionary<string, string> headers,
+            Dictionary<string, string> cookies,
+            List<string> proxy_list,
+            int timeout,
+            int retry_count,
+            bool output_raw,
+            string user_agent = null,
+            string content_type = "application/x-www-form-urlencoded",
+            string version = "2.0")
+        {
+            var tasks = urls.Select(url =>
+                http2_request(
+                    data, url, method, auto_redirect, body, headers, cookies, proxy_list, timeout, retry_count, output_raw, user_agent, content_type, version)
+            ).ToList();
+
+            var results = await Task.WhenAll(tasks);
+            return results.ToList();
+        }
+
+        private static string get_random_proxy(List<string> proxy_list)
+        {
+            if (proxy_list == null || proxy_list.Count == 0) return null;
+            var random = new Random();
+            return proxy_list[random.Next(proxy_list.Count)];
         }
     }
 }
